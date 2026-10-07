@@ -1,5 +1,10 @@
 {
-  "keywords": ["iphone", "laptop", "ps5", "ssd"],
+  "keywords": [
+    "iphone",
+    "laptop",
+    "ps5",
+    "ssd"
+  ],
   "min_discount": 50,
-  "last_update_id": 0
+  "last_update_id": 699733460
 }
