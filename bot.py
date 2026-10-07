@@ -1,4 +1,3 @@
-cat > /storage/emulated/0/2027/dealsbot/bot.py << 'EOF'
 """Deal Aggregator Bot — GitHub Actions + Telegram."""
 import os, json, re, time, urllib.parse, urllib.request, urllib.error
 from datetime import datetime
@@ -12,19 +11,32 @@ STATE_FILE = Path("seen.json")
 KEYWORDS_FILE = Path("keywords.json")
 
 
-def send_tg(text, chat_id=None):
+# ═══════════════════════════════════════════
+#   TELEGRAM
+# ═══════════════════════════════════════════
+
+def send_tg(text, chat_id=None, silent=False):
     cid = chat_id or TG_CHAT
     if not TG_TOKEN or not cid:
         log("[!] TG creds missing")
         return False
-    payload = {"chat_id": cid, "text": text, "parse_mode": "HTML",
-               "disable_web_page_preview": "true"}
+    payload = {
+        "chat_id": cid,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": "true",
+    }
+    if silent:
+        payload["disable_notification"] = "true"
     data = urllib.parse.urlencode(payload).encode()
     req = urllib.request.Request(
-        f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", data=data)
+        f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+        data=data,
+    )
     try:
         r = urllib.request.urlopen(req, timeout=15)
-        return json.loads(r.read().decode()).get("ok", False)
+        body = json.loads(r.read().decode())
+        return body.get("ok", False)
     except urllib.error.HTTPError as e:
         log(f"[!] TG: {e.read().decode()[:100]}")
         return False
@@ -38,17 +50,23 @@ def tg_get_updates(offset):
         return []
     try:
         params = urllib.parse.urlencode({
-            "offset": offset, "timeout": 1,
+            "offset": offset,
+            "timeout": 1,
             "allowed_updates": json.dumps(["message"]),
         })
         r = urllib.request.urlopen(
             f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates?{params}",
-            timeout=15)
+            timeout=15,
+        )
         data = json.loads(r.read().decode())
         return data.get("result", []) if data.get("ok") else []
     except Exception:
         return []
 
+
+# ═══════════════════════════════════════════
+#   STATE
+# ═══════════════════════════════════════════
 
 def load_json(path, default):
     if not path.exists():
@@ -66,6 +84,7 @@ def save_json(path, data):
 def load_keywords():
     return load_json(KEYWORDS_FILE, {
         "keywords": ["iphone", "laptop", "ssd", "ps5"],
+        "min_discount": 50,
         "last_update_id": 0,
     })
 
@@ -74,27 +93,36 @@ def load_seen():
     return load_json(STATE_FILE, {"urls": [], "last_run": ""})
 
 
+# ═══════════════════════════════════════════
+#   FILTER
+# ═══════════════════════════════════════════
+
 def match_keywords(deal, keywords):
+    """Check if deal matches any keyword."""
     if not keywords:
         return True
     title = (deal.get("title") or "").lower()
     return any(k.lower() in title for k in keywords)
 
 
+# ═══════════════════════════════════════════
+#   COMMANDS
+# ═══════════════════════════════════════════
+
 HELP = """<b>🤖 Deal Aggregator Bot</b>
 
 <b>Keywords:</b>
-/add &lt;word&gt;     — add
-/rm &lt;word&gt;      — remove
-/list           — show
+/add &lt;word&gt;     — add keyword
+/rm &lt;word&gt;      — remove keyword
+/list           — show keywords
 /clear          — clear all
 
 <b>Info:</b>
 /sites          — supported sites
-/stats          — stats
+/stats          — today's stats
 /help           — ye help
 
-<i>Alerts GitHub Actions se aate hain</i>"""
+<i>Alerts har 15 min me GitHub Actions se aate hain</i>"""
 
 
 def handle_command(text, chat_id, kw, seen):
@@ -112,24 +140,24 @@ def handle_command(text, chat_id, kw, seen):
         if not args:
             send_tg("Usage: <code>/add iphone</code>", chat_id)
             return False
-        w = args[0].lower()
-        if w in kw["keywords"]:
-            send_tg(f"Already hai: <b>{w}</b>", chat_id)
+        word = args[0].lower()
+        if word in kw["keywords"]:
+            send_tg(f"Already hai: <b>{word}</b>", chat_id)
             return False
-        kw["keywords"].append(w)
-        send_tg(f"✅ Added: <b>{w}</b> (total {len(kw['keywords'])})", chat_id)
+        kw["keywords"].append(word)
+        send_tg(f"✅ Added: <b>{word}</b>\nTotal: {len(kw['keywords'])}", chat_id)
         return True
 
     if cmd in ("/rm", "/remove"):
         if not args:
             send_tg("Usage: <code>/rm iphone</code>", chat_id)
             return False
-        w = args[0].lower()
-        if w in kw["keywords"]:
-            kw["keywords"].remove(w)
-            send_tg(f"🗑️ Removed: <b>{w}</b>", chat_id)
+        word = args[0].lower()
+        if word in kw["keywords"]:
+            kw["keywords"].remove(word)
+            send_tg(f"🗑️ Removed: <b>{word}</b>", chat_id)
         else:
-            send_tg(f"❌ Nahi mila: <b>{w}</b>", chat_id)
+            send_tg(f"❌ Nahi mila: <b>{word}</b>", chat_id)
         return False
 
     if cmd == "/list":
@@ -144,7 +172,7 @@ def handle_command(text, chat_id, kw, seen):
 
     if cmd == "/clear":
         kw["keywords"] = []
-        send_tg("🧹 Sab clear", chat_id)
+        send_tg("🧹 Sab keywords clear", chat_id)
         return True
 
     if cmd == "/sites":
@@ -167,13 +195,18 @@ def handle_command(text, chat_id, kw, seen):
     return False
 
 
+# ═══════════════════════════════════════════
+#   MAIN
+# ═══════════════════════════════════════════
+
 def main():
     log("=" * 50)
     log("Deal Aggregator Run")
+
     kw = load_keywords()
     seen = load_seen()
 
-    # Telegram commands
+    # ── Process Telegram commands ──
     offset = kw.get("last_update_id", 0) + 1
     updates = tg_get_updates(offset)
     kw_changed = False
@@ -194,12 +227,12 @@ def main():
     if kw_changed:
         save_json(KEYWORDS_FILE, kw)
 
-    # Scrape
+    # ── Scrape ──
     log(f"Keywords: {kw['keywords']}")
     deals = scrape_all()
-    log(f"Total: {len(deals)}")
+    log(f"Total scraped: {len(deals)}")
 
-    # Filter new
+    # ── Filter new ──
     seen_urls = set(seen.get("urls", []))
     new_deals = []
     for d in deals:
@@ -211,33 +244,37 @@ def main():
         new_deals.append(d)
         seen_urls.add(url)
 
-    log(f"New: {len(new_deals)}")
+    log(f"New matching deals: {len(new_deals)}")
 
+    # ── Send alerts ──
     if new_deals:
+        # Group by site
         by_site = {}
         for d in new_deals:
             by_site.setdefault(d["site_label"], []).append(d)
 
-        send_tg(f"🔥 <b>NEW DEALS</b> ({len(new_deals)})\n" + "━" * 15)
+        header = (f"🔥 <b>NEW DEALS</b> ({len(new_deals)})\n"
+                  + "━" * 15)
+        send_tg(header)
+
         for site, items in by_site.items():
             lines = [f"\n<b>{items[0]['site_icon']} {site}</b>"]
             for d in items[:5]:
-                pt = f"  <b>₹{d['price']:,}</b>" if d.get("price") else ""
-                lines.append(f"\n• <a href='{d['url']}'>{d['title'][:90]}</a>{pt}")
+                price_txt = f"  <b>₹{d['price']:,}</b>" if d.get("price") else ""
+                lines.append(f"\n• <a href='{d['url']}'>{d['title'][:90]}</a>{price_txt}")
             if len(items) > 5:
-                lines.append(f"\n<i>...aur {len(items)-5}</i>")
+                lines.append(f"\n<i>...aur {len(items) - 5}</i>")
             send_tg("\n".join(lines))
             time.sleep(1)
 
-    seen["urls"] = list(seen_urls)[-2000:]
+    # ── Save state ──
+    seen["urls"] = list(seen_urls)[-2000:]  # last 2000
     seen["last_run"] = datetime.now().isoformat()
     save_json(STATE_FILE, seen)
     save_json(KEYWORDS_FILE, kw)
+
     log("Done.")
 
 
 if __name__ == "__main__":
     main()
-EOF
-
-python3 -m py_compile /storage/emulated/0/2027/dealsbot/bot.py && echo "bot OK"
